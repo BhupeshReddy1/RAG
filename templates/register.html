@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="registration-container">
+        <!-- Image container -->
+        <div class="image-container">
+            <img src="{{ url_for('static', filename='images/rag11.png') }}" alt="Image">
+        </div>
+
+        <!-- Registration form container -->
+        <div class="registration-form">
+            <h1>Register</h1>
+
+            <!-- Display flashed messages -->
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    <div class="alert alert-danger">
+                        {% for message in messages %}
+                            <p>{{ message }}</p>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+
+            <!-- Registration form -->
+            <form method="POST">
+                {{ form.hidden_tag() }}
+
+                <label for="username">Username:</label>
+                {{ form.username(size=32) }}
+                {% for error in form.username.errors %}
+                    <span style="color: red;">{{ error }}</span>
+                {% endfor %}
+
+                <label for="email">Email:</label>
+                {{ form.email(size=32) }}
+                {% for error in form.email.errors %}
+                    <span style="color: red;">{{ error }}</span>
+                {% endfor %}
+
+                <label for="password">Password:</label>
+                {{ form.password(size=32) }}
+                {% for error in form.password.errors %}
+                    <span style="color: red;">{{ error }}</span>
+                {% endfor %}
+
+                <label for="confirm_password">Confirm Password:</label>
+                {{ form.confirm_password(size=32) }}
+                {% for error in form.confirm_password.errors %}
+                    <span style="color: red;">{{ error }}</span>
+                {% endfor %}
+
+                <button type="submit">Register</button>
+            </form>
+
+            <p>Already have an account? <a href="{{ url_for('login') }}">Login here</a></p>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style2.css') }}">
+</head>
+<body>
+    <div class="login-container">
+        <img src="{{ url_for('static', filename='images/raglogin.png') }}" alt="App Logo">
+        <h1>Welcome to Login page</h1>
+
+        <!-- Flash messages pop-up -->
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                <div id="popup" class="popup">
+                    {% for message in messages %}
+                        <div class="popup-message" style="display: none;">{{ message|safe }}</div>
+                    {% endfor %}
+                </div>
+                <script>
+                    // Display each flashed message in the pop-up box
+                    showPopup("{{ message|safe }}");
+                </script>
+            {% endif %}
+        {% endwith %}
+
+        <form id="loginForm" action="{{ url_for('login') }}" method="POST">
+    {{ form.hidden_tag() }} <!-- This is important for CSRF protection -->
+    <label for="email">Email:</label>
+    {{ form.email(size=32) }}
+    {% for error in form.email.errors %}
+        <span style="color: red;">{{ error }}</span>
+    {% endfor %}
+    <br>
+    <label for="password">Password:</label>
+    {{ form.password(size=32) }}
+    {% for error in form.password.errors %}
+        <span style="color: red;">{{ error }}</span>
+    {% endfor %}
+    <br>
+    <button type="submit">Login</button>
+</form>
+
+        <p>Don't have an account? <a href="/register">Register here</a></p>
+    </div>
+
+    <script>
+        // Display the pop-up box with a message
+        function showPopup(message) {
+            const popup = document.getElementById('popup');
+            popup.innerHTML = message;
+            popup.style.display = 'block';
+
+            // Hide the pop-up box after 3 seconds (adjust as needed)
+            setTimeout(function () {
+                popup.style.display = 'none';
+            }, 3000);
+        }
+
+        // Trigger the showPopup function on page load
+        document.addEventListener('DOMContentLoaded', function () {
+            const messages = document.querySelectorAll('.popup-message');
+
+            messages.forEach(function (message) {
+                showPopup(message.innerHTML);
+            });
+        });
+    </script>
+</body>
+</html>

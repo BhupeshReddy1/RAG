@@ -1,0 +1,117 @@
+{% block content %}
+<div class="container">
+    <div class="chat-sidebar">
+        <h2>Chats</h2>
+        <a href="{{ url_for('new_chat') }}" class="new-chat-btn">New Chat</a>
+        <div class="chat-list">
+            {% if chat_history %}
+                {% for chat in chat_history %}
+                    <a href="{{ url_for('home', chat_id=chat.id) }}" class="chat-item {% if chat.id == current_chat_id %}active{% endif %}">
+                        <span class="chat-title">{{ chat.title }}</span>
+                        <span class="chat-date">{{ chat.last_updated.strftime('%m/%d/%Y') }}</span>
+                    </a>
+                {% endfor %}
+            {% else %}
+                <p class="no-chats">No previous chats</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="header">
+            <h1>Welcome, {{ session['username'] }}!</h1>
+
+            <!-- Logout Button -->
+            <form action="{{ url_for('logout') }}" method="POST" style="display: inline;">
+                <button type="submit" class="logout-btn">Logout</button>
+            </form>
+        </div>
+
+        <!-- Display chat messages if viewing history (not submitting a new query) -->
+        {% if current_chat_messages and not show_fresh_result %}
+            <div class="chat-history">
+                {% for message in current_chat_messages %}
+                    <div class="message-container">
+                        <div class="query-box">
+                            <strong>Query:</strong>
+                            <p>{{ message.query }}</p>
+                            <small>PDF: {{ message.pdf_filename }}</small>
+                        </div>
+                        <div class="answer-box">
+                            <strong>Answer:</strong>
+                            <p>{{ message.answer }}</p>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+
+        <div class="query-form">
+            <form method="POST" enctype="multipart/form-data">
+                {{ form.hidden_tag() }}
+                <div class="form-group">
+                    {{ form.pdf.label }}
+                    {{ form.pdf(class="file-input") }}
+                    {% for error in form.pdf.errors %}
+                        <span class="error">{{ error }}</span>
+                    {% endfor %}
+                </div>
+                <div class="form-group">
+                    {{ form.query.label }}
+                    {{ form.query(size=50, class="query-input") }}
+                    {% for error in form.query.errors %}
+                        <span class="error">{{ error }}</span>
+                    {% endfor %}
+                </div>
+                <div class="button-group">
+                    {{ form.submit(class="submit-btn") }}
+                    {{ form.new_chat(class="new-chat-form-btn") }}
+                </div>
+            </form>
+        </div>
+
+        <!-- Show fresh results when a new query is submitted -->
+        {% if result and show_fresh_result %}
+            <div class="result-container">
+                <div class="message-container">
+                    <div class="query-box">
+                        <strong>Query:</strong>
+                        <p>{{ form.query.data }}</p>
+                        <small>PDF: {{ session['current_pdf'] }}</small>
+                    </div>
+                    <div class="answer-box">
+                        <strong>Answer:</strong>
+                        <p>{{ result }}</p>
+                    </div>
+                </div>
+
+                {% if top_doc_is_image and image_urls %}
+                    <h3>Relevant Image:</h3>
+                    <div class="image-container">
+                        {% for url, score in image_urls[:1] %}
+                            <div class="image-box">
+                                <h4>Image (Relevance Score: {{ "%.4f"|format(score) }})</h4>
+                                <img src="{{ url }}" alt="Relevant image" style="max-width: 100%; height: auto;">
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% elif documents %}
+                    <h3>Top Relevant Documents:</h3>
+                    <div class="documents-container">
+                        {% for doc_text, score in documents %}
+                            <div class="document-box">
+                                <h4>Document (Relevance Score: {{ "%.4f"|format(score) }})</h4>
+                                <div class="document-content">
+                                    {{ doc_text|safe }}
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<link rel="stylesheet" href="{{ url_for('static', filename='css/homestyles.css') }}">
+{% endblock %}

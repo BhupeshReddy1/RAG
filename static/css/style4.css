@@ -1,0 +1,53 @@
+/* Basic Reset */
+body, h1, p, a {
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    margin: 0;
+    background-color: #C0C0C0; /* Background color for the entire page */
+    text-align: center;
+}
+
+h1 {
+    color: #333;
+    margin-top: 10px;
+}
+
+p {
+    margin: 20px 0;
+    font-size: 20px;
+}
+
+a {
+    font-size: 30px;
+    color: #4caf50;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Style for the image */
+.welcome-image {
+    width: 100%; /* Make image take up the full width */
+    height: 60vh; /* Make image take 60% of the view height */
+    object-fit: cover; /* Ensure the image covers the area without stretching */
+    margin-bottom: 5px; /* Space between image and links */
+}
+
+/* Style for the login/register links */
+.auth-links p {
+    margin-top: 10px;
+}
+
+.auth-links a {
+    margin: 0 15px;
+}

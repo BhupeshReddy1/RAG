@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>Chat Details</h1>
+
+    <div class="chat-details">
+        <p><strong>Query:</strong> {{ chat.query }}</p>
+        <p><strong>Answer:</strong> {{ chat.answer }}</p>
+
+        {% if relevant_documents %}
+            <h3>Top Relevant Documents:</h3>
+            <div class="documents-container">
+                {% for doc_text, score in relevant_documents %}
+                    <div class="document-box">
+                        <h4>Document (Relevance Score: {{ "%.4f"|format(score) }})</h4>
+                        <div class="document-content">
+                            {{ doc_text|safe }}
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+
+    <a href="{{ url_for('home') }}">Back to Home</a>
+</div>
+{% endblock %}
