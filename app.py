@@ -20,7 +20,6 @@ from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTImage, LTFigure, LTPage
 from pdfminer.image import ImageWriter
 from datetime import datetime
-
 # Load environment variables
 load_dotenv()
 
@@ -33,13 +32,90 @@ app.config['IMAGE_FOLDER'] = os.path.join('static', 'pdf_images')  # Move images
 
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(
+    level=logging.DEBUG,  # Set to DEBUG to see everything
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]  # Force console output
+)
 
 # Ensure database tables are created
 create_users_table()
 
 # Setup Tesseract path
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+import weaviate
+from weaviate.connect import ConnectionParams
+from weaviate.config import AdditionalConfig, Timeout
+from weaviate.classes.query import Filter
+# Initialize Weaviate client
+client = weaviate.WeaviateClient(
+    connection_params=ConnectionParams.from_params(
+        http_host="localhost",
+        http_port=8080,
+        http_secure=False,
+        grpc_host="localhost",
+        grpc_port=50051,
+        grpc_secure=False
+    ),
+    additional_config=AdditionalConfig(
+        timeout=Timeout(init=30)  # Increase timeout
+    ),
+    skip_init_checks=True  # Skip gRPC checks
+)
+try:
+    client.connect()
+except weaviate.exceptions.WeaviateGRPCUnavailableError as e:
+    app.logger.error(f"Failed to connect to Weaviate gRPC: {e}")
+    print("Exiting: Could not connect to Weaviate.")
+    exit(1)
+except Exception as e:
+    app.logger.error(f"Unexpected error connecting to Weaviate: {e}")
+    exit(1)
+
+if not client.is_ready():
+    print("Exiting: Weaviate not ready.")
+    exit(1)
+
+from weaviate.classes.config import Configure, Property, DataType
+
+def create_weaviate_schema():
+    # Check if collection exists
+    collections = client.collections.list_all()
+    if "DocumentChunk" not in collections:
+        # Create collection with updated syntax
+        client.collections.create(
+            name="DocumentChunk",
+            description="A chunk of text from a PDF document",
+            vectorizer_config=Configure.Vectorizer.none(),
+            properties=[
+                Property(
+                    name="content",
+                    data_type=DataType.TEXT,
+                    description="The text content of the chunk"
+                ),
+                Property(
+                    name="pdf_filename",
+                    data_type=DataType.TEXT,
+                    description="The filename of the source PDF",
+                    skip_vectorization=True  # Replaces index_filterable/searchable
+                ),
+                Property(
+                    name="chunk_id",
+                    data_type=DataType.TEXT,
+                    description="A unique identifier for the chunk within the PDF",
+                    skip_vectorization=True
+                ),
+                Property(
+                    name="embedding",
+                    data_type=DataType.BLOB,
+                    description="The vector embedding of the chunk",
+                    skip_vectorization=True
+                ),
+            ]
+        )
+        app.logger.info("Weaviate 'DocumentChunk' collection created")
+    else:
+        app.logger.info("Weaviate 'DocumentChunk' collection already exists")
 
 
 # Function to extract embedded images from PDF using pdfminer
@@ -55,39 +131,36 @@ def extract_embedded_images(pdf_path, output_folder):
     for page_layout in extract_pages(pdf_path):
         page_num = page_layout.pageid
 
-        # Function to recursively extract images from layout objects
         def extract_images_from_layout(layout_obj):
             nonlocal image_count
-
             if isinstance(layout_obj, LTImage):
-                # Direct image object
                 try:
                     filename = f"image_p{page_num}_{image_count}.jpg"
                     image_path = os.path.join(output_folder, filename)
-
-                    # Save the image using the ImageWriter
-                    image_writer.export_image(layout_obj, filename)
+                    image_data = image_writer.export_image(layout_obj)
+                    if isinstance(image_data, str):
+                        if image_data != image_path and os.path.exists(image_data):
+                            os.rename(image_data, image_path)
+                    else:
+                        with open(image_path, 'wb') as f:
+                            if hasattr(image_data, 'getvalue'):
+                                f.write(image_data.getvalue())
+                            else:
+                                f.write(image_data)
                     image_paths.append(image_path)
                     image_count += 1
-
                 except Exception as e:
                     app.logger.error(f"Error extracting image: {e}")
-
             elif isinstance(layout_obj, LTFigure):
-                # Figure may contain images
                 for item in layout_obj:
                     extract_images_from_layout(item)
-
-            # If it's a container with children, process all children
             elif hasattr(layout_obj, "__iter__"):
                 for item in layout_obj:
                     extract_images_from_layout(item)
 
-        # Process the page
         extract_images_from_layout(page_layout)
 
     app.logger.debug(f"Extracted {image_count} images from {pdf_path}")
-
     # Alternative extraction using pdfplumber as backup
     if len(image_paths) == 0:
         app.logger.debug("No images found with pdfminer, trying pdfplumber")
@@ -96,17 +169,11 @@ def extract_embedded_images(pdf_path, output_folder):
                 for i, page in enumerate(pdf.pages):
                     for j, img in enumerate(page.images):
                         try:
-                            # Get image bytes
                             image_bytes = img["stream"].get_data()
-
-                            # Create a filename
                             filename = f"image_p{i + 1}_{j + 1}.jpg"
                             image_path = os.path.join(output_folder, filename)
-
-                            # Save the image
                             with open(image_path, "wb") as f:
                                 f.write(image_bytes)
-
                             image_paths.append(image_path)
                             image_count += 1
                         except Exception as e:
@@ -225,60 +292,69 @@ def get_image_path_from_document(doc_content, image_folder):
     return None
 
 
-# Function to retrieve relevant documents and rank by relevance
-def answer_question(query, document_search, image_folder):
+# Function to retrieve relevant documents from Weaviate
+from weaviate.classes.query import MetadataQuery
+
+def answer_question(query, pdf_filename, image_folder):
     try:
-        # Perform similarity search
-        docs = document_search.similarity_search_with_score(query, k=3)
+        embeddings_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        query_embedding = embeddings_model.embed_query(query)
 
-        # Log COMPLETE documents with their scores
-        app.logger.debug("Retrieved documents (FULL TEXT):")
-        for i, (doc, score) in enumerate(docs):
-            app.logger.debug(f"COMPLETE DOCUMENT {i + 1} (Score: {score:.4f}):\n{doc.page_content}\n{'=' * 60}")
+        document_chunk_collection = client.collections.get("DocumentChunk")
+        if document_chunk_collection is None:
+            app.logger.error("Weaviate 'DocumentChunk' collection not found.")
+            return None, [], [], False
 
-        # Check if the top document is from an image
+        response = document_chunk_collection.query.near_vector(
+            near_vector=query_embedding,
+            limit=3,
+            filters=weaviate.classes.query.Filter.by_property("pdf_filename").equal(pdf_filename),
+            return_metadata=MetadataQuery(distance=True)  # Request distance metadata
+        )
+
+        relevant_docs = []
+        for obj in response.objects:
+            relevant_docs.append((obj.properties["content"], obj.metadata.distance))
+
+        app.logger.debug("Retrieved documents (FULL TEXT) from Weaviate:")
+        for i, (doc, score) in enumerate(relevant_docs):
+            app.logger.debug(f"COMPLETE DOCUMENT {i + 1} (Score: {score:.4f}):\n{doc}\n{'=' * 60}")
+
         top_doc_is_image = False
         image_paths = []
-
-        # Process documents to identify images and prepare display data
         display_docs = []
-        for doc, score in docs[:3]:
-            if is_image_document(doc.page_content):
-                # Get the image path
-                img_path = get_image_path_from_document(doc.page_content, image_folder)
+
+        for doc, score in relevant_docs[:3]:
+            if is_image_document(doc):
+                img_path = get_image_path_from_document(doc, image_folder)
                 if img_path and os.path.exists(img_path):
-                    # Record that we have an image and store its path
                     image_paths.append((img_path, score))
-                    # If this is the top document, flag it
-                    if doc == docs[0][0]:
+                    if doc == relevant_docs[0][0]:
                         top_doc_is_image = True
             else:
-                # For regular text documents, process as before
-                display_docs.append((clean_text(doc.page_content), score))
+                display_docs.append((clean_text(doc), score))
 
-        # Use top 3 most relevant documents for answering
-        top_docs = [doc for doc, _ in docs[:3]]
-
-        # Concatenate the relevant documents for context
-        context = "\n\n".join([doc.page_content for doc in top_docs])
-
-        # Use the QA model to answer the question
+        top_docs_content = [doc for doc, _ in relevant_docs[:3]]
+        context = "\n\n".join(top_docs_content)
         answer = qa_model(question=query, context=context)
 
-        # Return the answer along with document info and image paths
         return answer['answer'], display_docs, image_paths, top_doc_is_image
     except Exception as e:
-        app.logger.error(f"Error answering question: {e}")
+        app.logger.error(f"Error answering question using Weaviate: {type(e).__name__}: {str(e)}")
         flash('An error occurred while answering the query.', 'danger')
         return None, [], [], False
 
+
+collection = client.collections.get("DocumentChunk")
+response = collection.query.fetch_objects(limit=3)
+for obj in response.objects:
+    print(obj.properties["content"])
 
 # Helper functions with error handling
 def get_user_chats(user_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # First check if the chats table exists
         cursor.execute("""
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
@@ -287,22 +363,21 @@ def get_user_chats(user_id):
             )
         """)
         table_exists = cursor.fetchone()[0]
-
         if not table_exists:
-            # If table doesn't exist, create it
+            app.logger.info("Chats table does not exist, creating it.")
             create_chat_tables()
             return []
-
-        # Now it's safe to query the table
         cursor.execute("""
-            SELECT * FROM chats 
+            SELECT id, user_id, title, last_updated FROM chats 
             WHERE user_id = %s 
             ORDER BY last_updated DESC
         """, (user_id,))
-        chats = cursor.fetchall()
+        rows = cursor.fetchall()
+        chats = [{'id': row[0], 'user_id': row[1], 'title': row[2], 'last_updated': row[3]} for row in rows]
+        app.logger.debug(f"Retrieved {len(chats)} chats for user_id {user_id}")
         return chats
     except Exception as e:
-        app.logger.error(f"Error retrieving user chats: {e}")
+        app.logger.error(f"Error retrieving user chats: {type(e).__name__}: {str(e)}")
         return []
     finally:
         cursor.close()
@@ -560,130 +635,102 @@ def home():
     form = QueryForm()
     result = None
     documents = []
-    image_paths = []
     image_urls = []
     top_doc_is_image = False
+    chat_history = get_user_chats(session['user_id'])
+    current_chat_messages = []
+    if session.get('current_chat_id'):
+        current_chat_messages = get_chat_messages(session['current_chat_id'])
 
-    # Get user's chat history with error handling
-    try:
-        chat_history = get_user_chats(session['user_id'])
-    except Exception as e:
-        app.logger.error(f"Error retrieving chat history: {e}")
-        chat_history = []
+    embeddings_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-    # Handle creating a new chat if the button is clicked
     if form.new_chat.data:
         return redirect(url_for('new_chat'))
 
-    # Check if we need to load a specific chat
     chat_id = request.args.get('chat_id')
     if chat_id:
-        # Load the specific chat
         session['current_chat_id'] = int(chat_id)
         return redirect(url_for('home'))
 
-    # If there's no current chat, create one or get the latest
     if 'current_chat_id' not in session or not session['current_chat_id']:
-        # Either get the latest chat or leave it as None for now
         if chat_history:
             session['current_chat_id'] = chat_history[0]['id']
         else:
             session['current_chat_id'] = None
 
-    # Get the current chat's messages if any
-    current_chat_messages = []
-    if session.get('current_chat_id'):
-        try:
-            current_chat_messages = get_chat_messages(session['current_chat_id'])
-        except Exception as e:
-            app.logger.error(f"Error retrieving chat messages: {e}")
-
-    # Process new query if submitted
     if form.validate_on_submit() and form.submit.data:
         file = form.pdf.data
         query = form.query.data
+        app.logger.debug(f"Form submitted: file={file}, query={query}")
 
         try:
-            # Save the uploaded PDF
-            pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
-            file.save(pdf_path)
+            if file:
+                pdf_filename = secure_filename(file.filename)
+                pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], pdf_filename)
+                file.save(pdf_path)
+                session['current_pdf'] = pdf_filename
+                app.logger.info(f"PDF uploaded: {pdf_filename}")
 
-            # Extract only embedded images from PDF
-            image_paths_extracted = extract_embedded_images(pdf_path, app.config['IMAGE_FOLDER'])
+                # Check if chunks already exist in Weaviate
+                document_chunk_collection = client.collections.get("DocumentChunk")
+                response = document_chunk_collection.query.fetch_objects(
+                    filters=weaviate.classes.query.Filter.by_property("pdf_filename").equal(pdf_filename),
+                    limit=1
+                )
+                if not response.objects:  # If no chunks exist, process the PDF
+                    image_paths_extracted = extract_embedded_images(pdf_path, app.config['IMAGE_FOLDER'])
+                    image_texts = extract_text_from_images(image_paths_extracted)
+                    paragraphs = extract_paragraphs(pdf_path)
+                    all_documents = paragraphs + image_texts
 
-            # Extract text from images - now returns a list of texts, one per image
-            image_texts = extract_text_from_images(image_paths_extracted)
-            app.logger.debug(f"Extracted {len(image_texts)} text documents from images")
+                    if document_chunk_collection is None:
+                        app.logger.error("Weaviate 'DocumentChunk' collection not found.")
+                        flash('Error: Could not store document chunks.', 'danger')
+                    else:
+                        with document_chunk_collection.batch.dynamic() as batch:
+                            for i, doc in enumerate(all_documents):
+                                embedding = embeddings_model.embed_query(doc)
+                                chunk_id = f"{pdf_filename}_chunk_{i}"
+                                batch.add_object(
+                                    properties={
+                                        "content": doc,
+                                        "pdf_filename": pdf_filename,
+                                        "chunk_id": chunk_id,
+                                    },
+                                    vector=embedding
+                                )
+                        if document_chunk_collection.batch.failed_objects:
+                            app.logger.error(f"Batch insertion failed: {document_chunk_collection.batch.failed_objects}")
+                            flash('Error: Some document chunks failed to upload.', 'danger')
+                        else:
+                            flash(f"PDF '{pdf_filename}' processed and stored in Weaviate.", 'success')
+                else:
+                    app.logger.info(f"PDF '{pdf_filename}' already processed, skipping reprocessing.")
 
-            # Extract text from PDF
-            paragraphs = extract_paragraphs(pdf_path)
-
-            # Add each image text as a separate document/paragraph
-            paragraphs.extend(image_texts)
-            app.logger.debug(f"Total paragraphs after adding image texts: {len(paragraphs)}")
-
-            # Create FAISS index
-            document_search = create_faiss_index(paragraphs)
-
-            # Answer the question - THIS IS WHERE WE GET THE RESULTS
-            result, documents, image_paths, top_doc_is_image = answer_question(query, document_search,
-                                                                               app.config['IMAGE_FOLDER'])
-
-            # Store the PDF filename in the session to maintain context across queries
-            session['current_pdf'] = secure_filename(file.filename)
-
-            # Debug logging to verify what's being returned
-            app.logger.debug(f"Result: {result[:100]}...")
-            app.logger.debug(f"Number of documents: {len(documents)}")
-            app.logger.debug(f"Number of image paths: {len(image_paths)}")
-
-            # Create relative URLs for images to pass to the template
-            image_urls = []
-            for img_path, score in image_paths:
-                # Extract filename from path
-                filename = os.path.basename(img_path)
-                # Create a URL that points to the image file
-                url = url_for('static', filename=f'pdf_images/{filename}')
-                image_urls.append((url, score))
-
-            # If there's no current chat, create one before saving the message
-            if not session.get('current_chat_id'):
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                try:
-                    # Create a new chat with a default title
-                    cursor.execute(
-                        "INSERT INTO chats (user_id, title) VALUES (%s, %s) RETURNING id",
-                        (session['user_id'], f"Chat about {query[:30]}...")
-                    )
-                    new_chat_id = cursor.fetchone()['id']
-                    conn.commit()
-                    session['current_chat_id'] = new_chat_id
-                except Exception as e:
-                    app.logger.error(f"Error creating new chat: {e}")
-                finally:
-                    cursor.close()
-                    conn.close()
-
-            # Only save the message if we have a valid chat_id
-            if session.get('current_chat_id'):
-                try:
-                    save_message(session['current_chat_id'], query, result, secure_filename(file.filename))
-                    # Reload chat history - but don't reload messages yet so we can show fresh results
+            if query and session.get('current_pdf'):
+                app.logger.debug(f"Processing query: {query} for PDF: {session['current_pdf']}")
+                result, documents, image_paths, top_doc_is_image = answer_question(
+                    query, session['current_pdf'], app.config['IMAGE_FOLDER']
+                )
+                app.logger.debug(f"Query result: {result}, Documents: {len(documents)}, Images: {len(image_paths)}")
+                image_urls = []
+                for img_path, score in image_paths:
+                    filename = os.path.basename(img_path)
+                    url = url_for('static', filename=f'pdf_images/{filename}')
+                    image_urls.append((url, score))
+                if session.get('current_chat_id'):
+                    save_message(session['current_chat_id'], query, result, session['current_pdf'])
                     chat_history = get_user_chats(session['user_id'])
-                except Exception as e:
-                    app.logger.error(f"Error saving message: {e}")
 
         except Exception as e:
-            app.logger.error(f"Error during file upload or processing: {e}")
-            flash('An error occurred while processing the file.', 'danger')
+            app.logger.error(f"Error during file upload or query with Weaviate: {type(e).__name__}: {str(e)}")
+            flash('An error occurred while processing the file or query.', 'danger')
 
+    app.logger.debug(f"Rendering home: result={result}, documents={len(documents)}, image_urls={len(image_urls)}")
     return render_template('home.html', form=form, result=result, documents=documents,
                            image_urls=image_urls, top_doc_is_image=top_doc_is_image,
                            chat_history=chat_history, current_chat_id=session.get('current_chat_id'),
                            current_chat_messages=current_chat_messages, show_fresh_result=form.submit.data)
-
-
 # Route: Welcome
 @app.route('/', methods=['GET'])
 def welcome():
@@ -702,6 +749,7 @@ if __name__ == '__main__':
     try:
         create_users_table()
         create_chat_tables()
+        create_weaviate_schema()
         app.logger.info("Database tables initialized successfully")
     except Exception as e:
         app.logger.error(f"Error initializing database tables: {e}")
@@ -709,4 +757,7 @@ if __name__ == '__main__':
         os.makedirs(app.config['UPLOAD_FOLDER'])
     if not os.path.exists(app.config['IMAGE_FOLDER']):
         os.makedirs(app.config['IMAGE_FOLDER'])
-    app.run(debug=True)
+    try:
+        app.run(debug=True)
+    finally:
+        client.close()
