@@ -20,14 +20,11 @@
     <div class="main-content">
         <div class="header">
             <h1>Welcome, {{ session['username'] }}!</h1>
-
-            <!-- Logout Button -->
             <form action="{{ url_for('logout') }}" method="POST" style="display: inline;">
                 <button type="submit" class="logout-btn">Logout</button>
             </form>
         </div>
 
-        <!-- Display chat messages if viewing history (not submitting a new query) -->
         {% if current_chat_messages and not show_fresh_result %}
             <div class="chat-history">
                 {% for message in current_chat_messages %}
@@ -41,6 +38,26 @@
                             <strong>Answer:</strong>
                             <p>{{ message.answer }}</p>
                         </div>
+                        {% if message.top_documents %}
+                            <h3>Top Relevant Documents:</h3>
+                            <div class="documents-container">
+                                {% for doc in message.top_documents %}
+                                    <div class="document-box">
+                                        <h4>Document (Relevance Score: {{ '%.4f'|format(doc.score|float) }})</h4>
+                                        <div class="document-content">{{ doc.text|safe }}</div>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% elif message.image_paths %}
+                            <h3>Relevant Image:</h3>
+                            <div class="image-container">
+                                {% for img_path in message.image_paths[:1] %}
+                                    <div class="image-box">
+                                        <h4>Image</h4>
+                                    </div>
+                                {% endfor %}
+                            </div>
+                        {% endif %}
                     </div>
                 {% endfor %}
             </div>
@@ -70,7 +87,6 @@
             </form>
         </div>
 
-        <!-- Show fresh results when a new query is submitted -->
         {% if result and show_fresh_result %}
             <div class="result-container">
                 <div class="message-container">
@@ -90,7 +106,7 @@
                     <div class="image-container">
                         {% for url, score in image_urls[:1] %}
                             <div class="image-box">
-                                <h4>Image (Relevance Score: {{ "%.4f"|format(score) }})</h4>
+                                <h4>Image (Relevance Score: {{ '%.4f'|format(score|float) }})</h4>
                                 <img src="{{ url }}" alt="Relevant image" style="max-width: 100%; height: auto;">
                             </div>
                         {% endfor %}
@@ -98,12 +114,10 @@
                 {% elif documents %}
                     <h3>Top Relevant Documents:</h3>
                     <div class="documents-container">
-                        {% for doc_text, score in documents %}
+                        {% for item in documents %}
                             <div class="document-box">
-                                <h4>Document (Relevance Score: {{ "%.4f"|format(score) }})</h4>
-                                <div class="document-content">
-                                    {{ doc_text|safe }}
-                                </div>
+                                <h4>Document (Relevance Score: {{ '%.4f'|format(item[1]|float) }})</h4>
+                                <div class="document-content">{{ item[0]|safe }}</div>
                             </div>
                         {% endfor %}
                     </div>
