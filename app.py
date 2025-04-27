@@ -20,34 +20,28 @@ from pdfminer.high_level import extract_pages
 from pdfminer.layout import LTImage, LTFigure, LTPage
 from pdfminer.image import ImageWriter
 from datetime import datetime
-# Load environment variables
+
 load_dotenv()
 
-# Initialize Flask app
 app = Flask(__name__)
-# Make sure the static/pdf_images directory exists
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default_secret_key')
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['IMAGE_FOLDER'] = os.path.join('static', 'pdf_images')  # Move images to static folder
 
-
-# Configure logging
 logging.basicConfig(
     level=logging.DEBUG,  # Set to DEBUG to see everything
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]  # Force console output
+    handlers=[logging.StreamHandler()]
 )
 
-# Ensure database tables are created
 create_users_table()
 
-# Setup Tesseract path
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 import weaviate
 from weaviate.connect import ConnectionParams
 from weaviate.config import AdditionalConfig, Timeout
 from weaviate.classes.query import Filter
-# Initialize Weaviate client
+
 client = weaviate.WeaviateClient(
     connection_params=ConnectionParams.from_params(
         http_host="localhost",
@@ -79,10 +73,8 @@ if not client.is_ready():
 from weaviate.classes.config import Configure, Property, DataType
 
 def create_weaviate_schema():
-    # Check if collection exists
     collections = client.collections.list_all()
     if "DocumentChunk" not in collections:
-        # Create collection with updated syntax
         client.collections.create(
             name="DocumentChunk",
             description="A chunk of text from a PDF document",
@@ -97,7 +89,7 @@ def create_weaviate_schema():
                     name="pdf_filename",
                     data_type=DataType.TEXT,
                     description="The filename of the source PDF",
-                    skip_vectorization=True  # Replaces index_filterable/searchable
+                    skip_vectorization=True
                 ),
                 Property(
                     name="chunk_id",
@@ -118,19 +110,15 @@ def create_weaviate_schema():
         app.logger.info("Weaviate 'DocumentChunk' collection already exists")
 
 
-# Function to extract embedded images from PDF using pdfminer
 def extract_embedded_images(pdf_path, output_folder):
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
     image_paths = []
     image_count = 0
-
     image_writer = ImageWriter(output_folder)
-
     for page_layout in extract_pages(pdf_path):
         page_num = page_layout.pageid
-
         def extract_images_from_layout(layout_obj):
             nonlocal image_count
             if isinstance(layout_obj, LTImage):
@@ -161,7 +149,6 @@ def extract_embedded_images(pdf_path, output_folder):
         extract_images_from_layout(page_layout)
 
     app.logger.debug(f"Extracted {image_count} images from {pdf_path}")
-    # Alternative extraction using pdfplumber as backup
     if len(image_paths) == 0:
         app.logger.debug("No images found with pdfminer, trying pdfplumber")
         try:
@@ -185,23 +172,15 @@ def extract_embedded_images(pdf_path, output_folder):
     return image_paths
 
 
-# Function to extract text from images using OCR
 def extract_text_from_images(image_paths):
     image_texts = []  # List to store text from each image separately
     for img_path in image_paths:
         try:
-            # Read the image
             img = Image.open(img_path)
-
-            # Convert to grayscale for better OCR results
             if img.mode != 'L':
                 img = img.convert('L')
-
-            # Perform OCR
             text = pytesseract.image_to_string(img)
-
-            if text.strip():  # Only add non-empty text
-                # Create a document for each image with source information
+            if text.strip():
                 image_doc = f"From image {os.path.basename(img_path)}:\n{text}"
                 image_texts.append(image_doc)
                 app.logger.debug(f"Extracted text from {img_path}: {text[:100]}...")
@@ -211,47 +190,34 @@ def extract_text_from_images(image_paths):
     return image_texts
 
 
-# Function: Clean text
 def clean_text(text):
-    # Replace multiple spaces with a single space
     cleaned = re.sub(r'\s+', ' ', text)
-    # Clean up line breaks that aren't paragraph breaks
     cleaned = re.sub(r'(?<!\.)(\n)(?![A-Z])', ' ', cleaned)
     return cleaned.strip()
 
 
-# Function: Extract paragraphs from PDF with improved text extraction
-# Download NLTK resources if not already present
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
     nltk.download('punkt')
 
 
-# Improved text extraction function
 def extract_paragraphs(pdf_path):
     try:
-        # Extract raw text from PDF
         pdfreader = PdfReader(pdf_path)
         raw_text = ''
         for page in pdfreader.pages:
             content = page.extract_text()
             if content:
                 raw_text += content + " "
-
-        # Simple sentence splitting using regex
         sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', raw_text)
-
-        # Group sentences into chunks, ensuring complete sentences
         chunks = []
         current_chunk = ""
-
         for sentence in sentences:
             sentence = sentence.strip()
             if not sentence:
                 continue
 
-            # If adding this sentence would exceed our target size and we already have content
             if len(current_chunk) + len(sentence) > 800 and current_chunk:
                 chunks.append(current_chunk.strip())
                 current_chunk = sentence
@@ -260,12 +226,9 @@ def extract_paragraphs(pdf_path):
                     current_chunk += " " + sentence
                 else:
                     current_chunk = sentence
-
-        # Add the last chunk if it has content
+                    
         if current_chunk:
             chunks.append(current_chunk.strip())
-
-        # Log a few chunks to verify
         for i, chunk in enumerate(chunks[:3]):
             app.logger.debug(f"Chunk {i + 1} (complete): {chunk}")
 
@@ -276,13 +239,11 @@ def extract_paragraphs(pdf_path):
 
 
 def is_image_document(doc_content):
-    # Check if the document starts with "From image" which we added in the extract_text_from_images function
     return doc_content.startswith("From image ")
 
 
 def get_image_path_from_document(doc_content, image_folder):
     try:
-        # Extract the image filename - it's in the format "From image image_p1_0.jpg:"
         match = re.search(r"From image (image_p\d+_\d+\.jpg):", doc_content)
         if match:
             image_filename = match.group(1)
@@ -291,8 +252,6 @@ def get_image_path_from_document(doc_content, image_folder):
         app.logger.error(f"Error extracting image path: {e}")
     return None
 
-
-# Function to retrieve relevant documents from Weaviate
 from weaviate.classes.query import MetadataQuery
 
 def answer_question(query, pdf_filename, image_folder):
@@ -350,7 +309,7 @@ response = collection.query.fetch_objects(limit=3)
 for obj in response.objects:
     print(obj.properties["content"])
 
-# Helper functions with error handling
+
 def get_user_chats(user_id):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -391,7 +350,6 @@ def get_chat_messages(chat_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Check if the messages table exists
         cursor.execute("""
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
@@ -402,11 +360,9 @@ def get_chat_messages(chat_id):
         table_exists = cursor.fetchone()[0]
 
         if not table_exists:
-            # If table doesn't exist, create it
             create_chat_tables()
             return []
 
-        # Now it's safe to query the table
         cursor.execute("""
             SELECT * FROM messages 
             WHERE chat_id = %s 
@@ -429,7 +385,6 @@ def save_message(chat_id, query, answer, pdf_filename):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Check if the messages table exists
         cursor.execute("""
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
@@ -443,13 +398,11 @@ def save_message(chat_id, query, answer, pdf_filename):
             # If table doesn't exist, create it
             create_chat_tables()
 
-        # Save the message
         cursor.execute("""
             INSERT INTO messages (chat_id, query, answer, pdf_filename)
             VALUES (%s, %s, %s, %s)
         """, (chat_id, query, answer, pdf_filename))
 
-        # Update the last_updated timestamp of the chat
         cursor.execute("""
             UPDATE chats 
             SET last_updated = CURRENT_TIMESTAMP 
@@ -482,10 +435,8 @@ def update_chat_title(chat_id, title):
         conn.close()
 
 
-# Function: Create FAISS index
 def create_faiss_index(paragraphs):
     try:
-        # Authenticate using the token
         hf_token = os.getenv('HF_TOKEN')
 
         # If you have a token, validate it
@@ -497,13 +448,8 @@ def create_faiss_index(paragraphs):
             except Exception as auth_error:
                 print(f"Authentication failed: {auth_error}")
 
-        # Use a universally accessible embedding model
         embedding_model_name = "sentence-transformers/all-MiniLM-L6-v2"
-
-        # Create embeddings
         embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
-
-        # Create a FAISS vector store from the chunks and embeddings
         document_search = FAISS.from_texts(paragraphs, embeddings)
         return document_search
     except Exception as e:
@@ -511,12 +457,10 @@ def create_faiss_index(paragraphs):
         raise
 
 
-# QA Model
 qa_model = pipeline("question-answering", model="deepset/roberta-base-squad2",
                     tokenizer="deepset/roberta-base-squad2")
 
 
-# Route: Register
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     form = RegistrationForm()
@@ -546,7 +490,6 @@ def register():
     return render_template('register.html', form=form)
 
 
-# Route: Login
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     form = LoginForm()
@@ -599,21 +542,16 @@ def new_chat():
         table_exists = cursor.fetchone()[0]
 
         if not table_exists:
-            # If table doesn't exist, create it
             create_chat_tables()
 
-        # Create a new chat with a default title
         cursor.execute(
             "INSERT INTO chats (user_id, title) VALUES (%s, %s) RETURNING id",
             (session['user_id'], f"New Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         )
         new_chat_id = cursor.fetchone()['id']
         conn.commit()
-
-        # Store the current chat ID in the session
+        
         session['current_chat_id'] = new_chat_id
-
-        # Redirect to home with a clean form
         return redirect(url_for('home'))
 
     except Exception as e:
@@ -731,20 +669,19 @@ def home():
                            image_urls=image_urls, top_doc_is_image=top_doc_is_image,
                            chat_history=chat_history, current_chat_id=session.get('current_chat_id'),
                            current_chat_messages=current_chat_messages, show_fresh_result=form.submit.data)
-# Route: Welcome
+
+
 @app.route('/', methods=['GET'])
 def welcome():
     return render_template('base.html')
 
 
-# Route: Logout
 @app.route('/logout', methods=['POST'])
 def logout():
-    session.clear()  # Clears the session data
-    return redirect(url_for('login'))  # Redirect to login page after logging out
+    session.clear()
+    return redirect(url_for('login'))
 
 
-# Run the Flask application
 if __name__ == '__main__':
     try:
         create_users_table()
